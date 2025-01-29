@@ -281,7 +281,7 @@ class LipsyncPipeline(DiffusionPipeline):
         boxes = []
         affine_matrices = []
         
-        print(f"Affine transforming {len(video_frames)} faces...")
+        print(f"New Affine transforming {len(video_frames)} faces...")
         with tqdm.tqdm(total=len(video_frames), desc="Processing Frames", unit="frame") as pbar:
             for frame in video_frames:
                 face, box, affine_matrix = self.image_processor.affine_transform(frame)
