@@ -266,7 +266,7 @@ class LipsyncPipeline(DiffusionPipeline):
         faces, boxes, affine_matrices = [], [], []
         skipped_frames = []
     
-        print("Transforming video frames...")
+        print(f"Transforming {len(video_frames)} faces...")
     
         for i, frame in enumerate(video_frames):
             face, box, affine_matrix = self.image_processor.affine_transform(frame)
@@ -292,7 +292,7 @@ class LipsyncPipeline(DiffusionPipeline):
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
         video_frames = video_frames[: faces.shape[0]]
         out_frames = []
-        print(f"Restoring {len(faces)} faces...")
+        print("Restoring faces...")
         for index, face in enumerate(faces):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
