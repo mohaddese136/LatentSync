@@ -260,76 +260,49 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
-    # def affine_transform_video(self, video_path):
-    #     video_frames = read_video(video_path, use_decord=False)
-    #     faces = []
-    #     boxes = []
-    #     affine_matrices = []
-    #     print(f"Affine transforming {len(video_frames)} faces...")
-    #     for frame in tqdm.tqdm(video_frames):
-    #         face, box, affine_matrix = self.image_processor.affine_transform(frame)
-    #         faces.append(face)
-    #         boxes.append(box)
-    #         affine_matrices.append(affine_matrix)
-
-    #     faces = torch.stack(faces)
-    #     return faces, video_frames, boxes, affine_matrices
 
     def affine_transform_video(self, video_path):
-        video_frames = read_video(video_path, use_decord=False)
-        faces = []
-        boxes = []
-        affine_matrices = []
-        
-        print(f"New Affine transforming {len(video_frames)} faces...")
-        with tqdm.tqdm(total=len(video_frames), desc="Processing Frames", unit="frame") as pbar:
-            for frame in video_frames:
-                face, box, affine_matrix = self.image_processor.affine_transform(frame)
-                faces.append(face)
-                boxes.append(box)
-                affine_matrices.append(affine_matrix)
-                pbar.update(1)  # Update progress bar after each frame
+        video_frames = read_video(video_path, change_fps=False, use_decord=True)
+        faces, boxes, affine_matrices = [], [], []
+        skipped_frames = []
     
-        faces = torch.stack(faces)
+        print("Transforming video frames...")
+    
+        for i, frame in enumerate(video_frames):
+            face, box, affine_matrix = self.image_processor.affine_transform(frame)
+            if face is None:
+                skipped_frames.append(i)
+                continue
+            faces.append(face)
+            boxes.append(box)
+            affine_matrices.append(affine_matrix)
+    
+        if skipped_frames:
+            print(f"Warning: Skipped {len(skipped_frames)} frames due to face detection failure: {skipped_frames}")
+    
+        if faces:
+            faces = torch.stack(faces)
+        else:
+            print("Error: No faces detected in any frame. Returning empty tensors.")
+            faces = torch.empty((0,))
+        
         return faces, video_frames, boxes, affine_matrices
 
-
-    # def restore_video(self, faces, video_frames, boxes, affine_matrices):
-    #     video_frames = video_frames[: faces.shape[0]]
-    #     out_frames = []
-    #     print(f"Restoring {len(faces)} faces...")
-    #     for index, face in enumerate(tqdm.tqdm(faces)):
-    #         x1, y1, x2, y2 = boxes[index]
-    #         height = int(y2 - y1)
-    #         width = int(x2 - x1)
-    #         face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-    #         face = rearrange(face, "c h w -> h w c")
-    #         face = (face / 2 + 0.5).clamp(0, 1)
-    #         face = (face * 255).to(torch.uint8).cpu().numpy()
-    #         # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
-    #         out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-    #         out_frames.append(out_frame)
-    #     return np.stack(out_frames, axis=0)
 
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
         video_frames = video_frames[: faces.shape[0]]
         out_frames = []
-        
-        print(f"Restoring {len(faces)} faces...")
-        with tqdm.tqdm(total=len(faces), desc="Restoring Faces", unit="face") as pbar:
-            for index, face in enumerate(faces):
-                x1, y1, x2, y2 = boxes[index]
-                height = int(y2 - y1)
-                width = int(x2 - x1)
-                face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-                face = rearrange(face, "c h w -> h w c")
-                face = (face / 2 + 0.5).clamp(0, 1)
-                face = (face * 255).to(torch.uint8).cpu().numpy()
-                # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
-                out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-                out_frames.append(out_frame)
-                pbar.update(1)  # Update the progress bar
-    
+        print("Restoring faces...")
+        for index, face in enumerate(faces):
+            x1, y1, x2, y2 = boxes[index]
+            height = int(y2 - y1)
+            width = int(x2 - x1)
+            face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
+            face = rearrange(face, "c h w -> h w c")
+            face = (face / 2 + 0.5).clamp(0, 1)
+            face = (face * 255).to(torch.uint8).cpu().numpy()
+            out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
+            out_frames.append(out_frame)
         return np.stack(out_frames, axis=0)
 
 
@@ -415,79 +388,7 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
         )
 
-        # for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
-        #     if self.unet.add_audio_layer:
-        #         audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
-        #         audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
-        #         if do_classifier_free_guidance:
-        #             null_audio_embeds = torch.zeros_like(audio_embeds)
-        #             audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
-        #     else:
-        #         audio_embeds = None
-        #     inference_faces = faces[i * num_frames : (i + 1) * num_frames]
-        #     latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
-        #     pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
-        #         inference_faces, affine_transform=False
-        #     )
-
-        #     # 7. Prepare mask latent variables
-        #     mask_latents, masked_image_latents = self.prepare_mask_latents(
-        #         masks,
-        #         masked_pixel_values,
-        #         height,
-        #         width,
-        #         weight_dtype,
-        #         device,
-        #         generator,
-        #         do_classifier_free_guidance,
-        #     )
-
-        #     # 8. Prepare image latents
-        #     image_latents = self.prepare_image_latents(
-        #         pixel_values,
-        #         device,
-        #         weight_dtype,
-        #         generator,
-        #         do_classifier_free_guidance,
-        #     )
-
-        #     # 9. Denoising loop
-        #     num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-        #     with self.progress_bar(total=num_inference_steps) as progress_bar:
-        #         for j, t in enumerate(timesteps):
-        #             # expand the latents if we are doing classifier free guidance
-        #             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-
-        #             # concat latents, mask, masked_image_latents in the channel dimension
-        #             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-        #             latent_model_input = torch.cat(
-        #                 [latent_model_input, mask_latents, masked_image_latents, image_latents], dim=1
-        #             )
-
-        #             # predict the noise residual
-        #             noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=audio_embeds).sample
-
-        #             # perform guidance
-        #             if do_classifier_free_guidance:
-        #                 noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
-        #                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
-
-        #             # compute the previous noisy sample x_t -> x_t-1
-        #             latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
-
-        #             # call the callback, if provided
-        #             if j == len(timesteps) - 1 or ((j + 1) > num_warmup_steps and (j + 1) % self.scheduler.order == 0):
-        #                 progress_bar.update()
-        #                 if callback is not None and j % callback_steps == 0:
-        #                     callback(j, t, latents)
-
-        #     # Recover the pixel values
-        #     decoded_latents = self.decode_latents(latents)
-        #     decoded_latents = self.paste_surrounding_pixels_back(
-        #         decoded_latents, pixel_values, 1 - masks, device, weight_dtype
-        #     )
-        #     synced_video_frames.append(decoded_latents)
-        #     # masked_video_frames.append(masked_pixel_values)
+        
 
 
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
