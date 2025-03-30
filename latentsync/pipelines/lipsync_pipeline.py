@@ -1,7 +1,8 @@
+# Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
+
 import inspect
 import os
 import shutil
-import math
 from typing import Callable, List, Optional, Union
 import subprocess
 
@@ -115,8 +116,6 @@ class LipsyncPipeline(DiffusionPipeline):
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
 
         self.set_progress_bar_config(desc="Steps")
-        self.cache_dir = ".latentsync_cache"
-        os.makedirs(self.cache_dir, exist_ok=True)
 
     def enable_vae_slicing(self):
         self.vae.enable_slicing()
@@ -261,26 +260,15 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
-    def affine_transform_video_cached(self, video_path, cache_path=None):
-        """Perform affine transformation with caching support"""
-        # Generate a cache path based on video_path if none provided
-        if cache_path is None:
-            video_hash = str(hash(video_path))
-            cache_path = os.path.join(self.cache_dir, f"affine_transform_{video_hash}.pt")
-        
-        if os.path.exists(cache_path):
-            print(f"Loading cached face transformations from {cache_path}")
-            cached_data = torch.load(cache_path)
-            return cached_data['faces'], cached_data['video_frames'], cached_data['boxes'], cached_data['affine_matrices']
-        
-        # If no cache, process the video
+
+    def affine_transform_video(self, video_path):
         video_frames = read_video(video_path, change_fps=False, use_decord=True)
         faces, boxes, affine_matrices = [], [], []
         skipped_frames = []
     
         print(f"Transforming {len(video_frames)} faces...")
     
-        for i, frame in enumerate(tqdm.tqdm(video_frames)):
+        for i, frame in enumerate(video_frames):
             face, box, affine_matrix = self.image_processor.affine_transform(frame)
             if face is None:
                 skipped_frames.append(i)
@@ -298,80 +286,35 @@ class LipsyncPipeline(DiffusionPipeline):
             print("Error: No faces detected in any frame. Returning empty tensors.")
             faces = torch.empty((0,))
         
-        # Save to cache
-        print(f"Caching face transformations to {cache_path}")
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        torch.save({
-            'faces': faces,
-            'video_frames': video_frames,
-            'boxes': boxes,
-            'affine_matrices': affine_matrices
-        }, cache_path)
-            
         return faces, video_frames, boxes, affine_matrices
 
-    def loop_video_cached(self, whisper_chunks, faces, video_frames, boxes, affine_matrices, cache_path=None):
-        """Loop video with caching support"""
-        # Generate a cache path based on inputs if none provided
-        if cache_path is None:
-            # Create a hash of input parameters
-            input_hash = str(hash(f"{len(whisper_chunks)}_{len(faces)}_{len(video_frames)}"))
-            cache_path = os.path.join(self.cache_dir, f"loop_video_{input_hash}.pt")
-        
-        # Check if we have a cached version first
-        if os.path.exists(cache_path):
-            print(f"Loading cached looped video from {cache_path}")
-            cached_data = torch.load(cache_path)
-            return cached_data['video_frames'], cached_data['faces'], cached_data['boxes'], cached_data['affine_matrices']
-        
-        # If the audio is longer than the video, we need to loop the video
-        if len(whisper_chunks) > len(video_frames):
-            num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
-            loop_video_frames = []
-            loop_faces = []
-            loop_boxes = []
-            loop_affine_matrices = []
-            
-            for i in range(num_loops):
-                if i % 2 == 0:
-                    loop_video_frames.append(video_frames)
-                    loop_faces.append(faces)
-                    loop_boxes += boxes
-                    loop_affine_matrices += affine_matrices
-                else:
-                    # Reverse for variation
-                    loop_video_frames.append(video_frames[::-1])
-                    loop_faces.append(faces.flip(0))
-                    loop_boxes += boxes[::-1]
-                    loop_affine_matrices += affine_matrices[::-1]
-            
-            video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
-            faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
-            boxes = loop_boxes[: len(whisper_chunks)]
-            affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
+    def cache_video_data(self, video_path):
+        """Cache video data to avoid redundant processing when using the same video with multiple voices"""
+        if not hasattr(self, '_video_cache') or self._video_cache.get('video_path') != video_path:
+            print(f"Caching video data from {video_path}...")
+            faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
+            self._video_cache = {
+                'video_path': video_path,
+                'faces': faces,
+                'original_video_frames': original_video_frames,
+                'boxes': boxes,
+                'affine_matrices': affine_matrices
+            }
         else:
-            video_frames = video_frames[: len(whisper_chunks)]
-            faces = faces[: len(whisper_chunks)]
-            boxes = boxes[: len(whisper_chunks)]
-            affine_matrices = affine_matrices[: len(whisper_chunks)]
+            print(f"Using cached video data from {video_path}")
         
-        # Save to cache
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        print(f"Caching looped video to {cache_path}")
-        torch.save({
-            'video_frames': video_frames,
-            'faces': faces,
-            'boxes': boxes,
-            'affine_matrices': affine_matrices
-        }, cache_path)
-        
-        return video_frames, faces, boxes, affine_matrices
+        return (
+            self._video_cache['faces'],
+            self._video_cache['original_video_frames'],
+            self._video_cache['boxes'],
+            self._video_cache['affine_matrices']
+        )
 
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
         video_frames = video_frames[: faces.shape[0]]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
-        for index, face in enumerate(tqdm.tqdm(faces)):
+        for index, face in enumerate(faces):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
             width = int(x2 - x1)
@@ -383,9 +326,10 @@ class LipsyncPipeline(DiffusionPipeline):
             out_frames.append(out_frame)
         return np.stack(out_frames, axis=0)
 
+
     @torch.no_grad()
     def __call__(
-        self,
+     self,
         video_path: str,
         audio_path: str,
         video_out_path: str,
@@ -403,7 +347,7 @@ class LipsyncPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
-        use_cache: bool = True,
+        use_cached_video: bool = False,
         **kwargs,
     ):
         is_train = self.unet.training
@@ -416,21 +360,16 @@ class LipsyncPipeline(DiffusionPipeline):
         device = self._execution_device
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda")
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
+
+        # Use cached video data if available and requested
+        if use_cached_video:
+            faces, original_video_frames, boxes, affine_matrices = self.cache_video_data(video_path)
+        else:
+            faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         
-        # Generate cache paths based on input files
-        video_hash = str(hash(video_path))
-        audio_hash = str(hash(audio_path))
-        affine_cache_path = os.path.join(self.cache_dir, f"affine_{video_hash}.pt") if use_cache else None
-        
-        # Use caching for affine transformation
-        faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video_cached(
-            video_path, cache_path=affine_cache_path
-        )
-        
-        # Process audio
+        #faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         audio_samples = read_audio(audio_path)
-        whisper_cache_path = os.path.join(self.cache_dir, f"whisper_{audio_hash}.pt") if use_cache else None
-        
+
         # 1. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -452,32 +391,10 @@ class LipsyncPipeline(DiffusionPipeline):
 
         self.video_fps = video_fps
 
-        # Process audio features with optional caching
-        if use_cache and whisper_cache_path and os.path.exists(whisper_cache_path):
-            print(f"Loading cached whisper features from {whisper_cache_path}")
-            whisper_data = torch.load(whisper_cache_path)
-            whisper_feature = whisper_data['feature']
-            whisper_chunks = whisper_data['chunks']
-        else:
+        if self.unet.add_audio_layer:
             whisper_feature = self.audio_encoder.audio2feat(audio_path)
             whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
-            
-            if use_cache and whisper_cache_path:
-                print(f"Caching whisper features to {whisper_cache_path}")
-                os.makedirs(os.path.dirname(whisper_cache_path), exist_ok=True)
-                torch.save({
-                    'feature': whisper_feature,
-                    'chunks': whisper_chunks
-                }, whisper_cache_path)
 
-        # Use loop_video_cached to prepare the video frames based on audio length
-        loop_cache_path = os.path.join(self.cache_dir, f"loop_{video_hash}_{audio_hash}.pt") if use_cache else None
-        video_frames, faces, boxes, affine_matrices = self.loop_video_cached(
-            whisper_chunks, faces, original_video_frames, boxes, affine_matrices, 
-            cache_path=loop_cache_path
-        )
-
-        if self.unet.add_audio_layer:
             num_inferences = min(len(faces), len(whisper_chunks)) // num_frames
         else:
             num_inferences = len(faces) // num_frames
@@ -498,6 +415,9 @@ class LipsyncPipeline(DiffusionPipeline):
             device,
             generator,
         )
+
+        
+
 
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
@@ -578,9 +498,11 @@ class LipsyncPipeline(DiffusionPipeline):
 
 
         synced_video_frames = self.restore_video(
-            torch.cat(synced_video_frames), video_frames[:num_frames*num_inferences], 
-            boxes[:num_frames*num_inferences], affine_matrices[:num_frames*num_inferences]
+            torch.cat(synced_video_frames), original_video_frames, boxes, affine_matrices
         )
+        # masked_video_frames = self.restore_video(
+        #     torch.cat(masked_video_frames), original_video_frames, boxes, affine_matrices
+        # )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
@@ -594,12 +516,9 @@ class LipsyncPipeline(DiffusionPipeline):
         os.makedirs(temp_dir, exist_ok=True)
 
         write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=25)
-        if video_mask_path:
-            write_video(video_mask_path, masked_video_frames, fps=25)
+        # write_video(video_mask_path, masked_video_frames, fps=25)
 
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
         command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
         subprocess.run(command, shell=True)
-        
-        return video_out_path
