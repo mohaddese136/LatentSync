@@ -347,7 +347,7 @@ class LipsyncPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
-        use_cached_video: bool = False,
+        use_cached_video: bool = True  ,
         **kwargs,
     ):
         is_train = self.unet.training
