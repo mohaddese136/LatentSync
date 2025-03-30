@@ -362,10 +362,7 @@ class LipsyncPipeline(DiffusionPipeline):
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # Use cached video data if available and requested
-        if use_cached_video:
-            faces, original_video_frames, boxes, affine_matrices = self.cache_video_data(video_path)
-        else:
-            faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
+        faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         
         #faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         audio_samples = read_audio(audio_path)
