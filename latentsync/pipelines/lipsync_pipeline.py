@@ -290,8 +290,32 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def cache_video_data(self, video_path):
         """Cache video data to avoid redundant processing when using the same video with multiple voices"""
+        # Initialize cache_dir as a class attribute if not already set
+        if not hasattr(self, 'cache_dir'):
+            self.cache_dir = os.path.join(os.path.dirname(os.path.abspath(video_path)), 'lip_sync_cache')
+        
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        # Create a unique cache filename based on the video path
+        import hashlib
+        video_hash = hashlib.md5(video_path.encode()).hexdigest()
+        cache_file = os.path.join(self.cache_dir, f"{video_hash}.pt")
+        
+        # Check if cache exists on disk first
+        if os.path.exists(cache_file):
+            print(f"Loading cached video data from {cache_file}")
+            cached_data = torch.load(cache_file)
+            self._video_cache = cached_data
+            return (
+                cached_data['faces'],
+                cached_data['original_video_frames'],
+                cached_data['boxes'],
+                cached_data['affine_matrices']
+            )
+        
+        # If not in memory cache, process the video
         if not hasattr(self, '_video_cache') or self._video_cache.get('video_path') != video_path:
-            print(f"Caching video data from {video_path}...")
+            print(f"Processing and caching video data from {video_path}...")
             faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
             self._video_cache = {
                 'video_path': video_path,
@@ -300,8 +324,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 'boxes': boxes,
                 'affine_matrices': affine_matrices
             }
+            
+            # Save to disk cache
+            torch.save(self._video_cache, cache_file)
+            print(f"Video data cached to {cache_file}")
         else:
-            print(f"Using cached video data from {video_path}")
+            print(f"Using in-memory cached video data from {video_path}")
         
         return (
             self._video_cache['faces'],
