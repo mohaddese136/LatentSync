@@ -10,9 +10,6 @@ import numpy as np
 import torch
 import torchvision
 
-import pickle
-
-
 from diffusers.utils import is_accelerate_available
 from packaging import version
 
@@ -264,44 +261,13 @@ class LipsyncPipeline(DiffusionPipeline):
         return images
 
 
-    def affine_transform_video(self, video_path, cache_dir=None):
-        """
-        Either process a video for face detection or load cached results
-        
-        Args:
-            video_path: Path to the input video
-            cache_dir: Directory containing cached face detection results
-            
-        Returns:
-            faces, original_video_frames, boxes, affine_matrices
-        """
-        # If cache_dir is provided, load from cache
-        if cache_dir and os.path.exists(cache_dir):
-            # Load metadata
-            with open(os.path.join(cache_dir, 'metadata.pkl'), 'rb') as f:
-                data = pickle.load(f)
-            
-            # Load faces tensor
-            faces = torch.load(os.path.join(cache_dir, 'faces.pt'))
-            
-            # Load original frames
-            original_frames = np.load(os.path.join(cache_dir, 'original_frames.npy'))
-            original_video_frames = list(original_frames)
-            
-            # Extract other data from metadata
-            boxes = data['boxes']
-            affine_matrices = data['affine_matrices']
-            
-            print(f"Loaded face detection results from {cache_dir}")
-            return faces, original_video_frames, boxes, affine_matrices
-        
-        # Otherwise, process the video
+    def affine_transform_video(self, video_path):
         video_frames = read_video(video_path, change_fps=False, use_decord=True)
         faces, boxes, affine_matrices = [], [], []
         skipped_frames = []
-        
+    
         print(f"Transforming {len(video_frames)} faces...")
-        
+    
         for i, frame in enumerate(video_frames):
             face, box, affine_matrix = self.image_processor.affine_transform(frame)
             if face is None:
@@ -310,10 +276,10 @@ class LipsyncPipeline(DiffusionPipeline):
             faces.append(face)
             boxes.append(box)
             affine_matrices.append(affine_matrix)
-        
+    
         if skipped_frames:
             print(f"Warning: Skipped {len(skipped_frames)} frames due to face detection failure: {skipped_frames}")
-        
+    
         if faces:
             faces = torch.stack(faces)
         else:
@@ -322,6 +288,85 @@ class LipsyncPipeline(DiffusionPipeline):
         
         return faces, video_frames, boxes, affine_matrices
 
+    def preprocess_and_cache_video(self, video_path):
+        """
+        Preprocesses a video and caches the results to disk without running the full pipeline.
+        
+        Args:
+            video_path (str): Path to the input video file
+            
+        Returns:
+            tuple: A tuple containing (faces, original_video_frames, boxes, affine_matrices)
+        """
+        # Initialize the image processor if it hasn't been initialized yet
+        if not hasattr(self, 'image_processor'):
+            # Use default height for initialization if not provided
+            height = self.unet.config.sample_size * self.vae_scale_factor if hasattr(self, 'unet') else 512
+            self.image_processor = ImageProcessor(height, mask="fix_mask", device="cuda")
+        
+        # Call the cache_video_data method to process and cache the video
+        print(f"Preprocessing and caching video: {video_path}")
+        faces, original_video_frames, boxes, affine_matrices = self.cache_video_data(video_path)
+        
+        print(f"Video preprocessing complete. Found {len(faces)} faces.")
+        
+        # Return the cached data
+        return faces, original_video_frames, boxes, affine_matrices
+    
+    # Also enhance the cache_video_data method to be more robust when used independently
+    def cache_video_data(self, video_path):
+        """Cache video data to avoid redundant processing when using the same video with multiple voices"""
+        # Initialize cache_dir as a class attribute if not already set
+        if not hasattr(self, 'cache_dir'):
+            self.cache_dir = os.path.join(os.path.dirname(os.path.abspath(video_path)), 'lip_sync_cache')
+        
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        # Create a unique cache filename based on the video path
+        import hashlib
+        video_hash = hashlib.md5(video_path.encode()).hexdigest()
+        cache_file = os.path.join(self.cache_dir, f"{video_hash}.pt")
+        
+        # Check if cache exists on disk first
+        if os.path.exists(cache_file):
+            print(f"Loading cached video data from {cache_file}")
+            cached_data = torch.load(cache_file)
+            self._video_cache = cached_data
+            return (
+                cached_data['faces'],
+                cached_data['original_video_frames'],
+                cached_data['boxes'],
+                cached_data['affine_matrices']
+            )
+        
+        # If we need to process the video
+        print(f"Processing and caching video data from {video_path}...")
+        
+        # Make sure image_processor is initialized
+        if not hasattr(self, 'image_processor'):
+            # Use default height for initialization if not provided
+            height = self.unet.config.sample_size * self.vae_scale_factor if hasattr(self, 'unet') else 512
+            self.image_processor = ImageProcessor(height, mask="fix_mask", device="cuda")
+        
+        faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
+        self._video_cache = {
+            'video_path': video_path,
+            'faces': faces,
+            'original_video_frames': original_video_frames,
+            'boxes': boxes,
+            'affine_matrices': affine_matrices
+        }
+        
+        # Save to disk cache
+        torch.save(self._video_cache, cache_file)
+        print(f"Video data cached to {cache_file}")
+        
+        return (
+            self._video_cache['faces'],
+            self._video_cache['original_video_frames'],
+            self._video_cache['boxes'],
+            self._video_cache['affine_matrices']
+        )
 
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
         video_frames = video_frames[: faces.shape[0]]
@@ -340,52 +385,9 @@ class LipsyncPipeline(DiffusionPipeline):
         return np.stack(out_frames, axis=0)
 
 
-    def save_face_detection_results(self, video_path, output_dir=None):
-        """
-        Process a video and save face detection results to disk
-        
-        Args:
-            video_path: Path to the input video
-            output_dir: Directory to save results (defaults to video filename + '_face_data')
-        
-        Returns:
-            output_dir: Path to the directory where results were saved
-        """
-        # Default output directory if none provided
-        if output_dir is None:
-            base_name = os.path.splitext(os.path.basename(video_path))[0]
-            output_dir = f"{base_name}_face_data"
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Process video to extract face data
-        faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
-        
-        # Save results
-        data = {
-            'video_path': video_path,
-            'boxes': boxes,
-            'affine_matrices': affine_matrices,
-            'frame_count': len(original_video_frames)
-        }
-        
-        # Save metadata and numpy arrays
-        with open(os.path.join(output_dir, 'metadata.pkl'), 'wb') as f:
-            pickle.dump(data, f)
-        
-        # Save faces as tensor
-        torch.save(faces, os.path.join(output_dir, 'faces.pt'))
-        
-        # Save original video frames as numpy array
-        np.save(os.path.join(output_dir, 'original_frames.npy'), 
-                np.stack([frame.numpy() if isinstance(frame, torch.Tensor) else frame for frame in original_video_frames]))
-        
-        print(f"Face detection results saved to {output_dir}")
-        return output_dir
-    
     @torch.no_grad()
     def __call__(
-        self,
+     self,
         video_path: str,
         audio_path: str,
         video_out_path: str,
@@ -403,6 +405,7 @@ class LipsyncPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
+        use_cached_video: bool = True  ,
         **kwargs,
     ):
         is_train = self.unet.training
@@ -416,7 +419,10 @@ class LipsyncPipeline(DiffusionPipeline):
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda")
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
-        faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path, cache_dir="cache")
+        # Use cached video data if available and requested
+        faces, original_video_frames, boxes, affine_matrices = self.cache_video_data(video_path)
+        
+        #faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         audio_samples = read_audio(audio_path)
 
         # 1. Default height and width to unet
