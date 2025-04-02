@@ -325,7 +325,8 @@ class LipsyncPipeline(DiffusionPipeline):
         # Create a unique cache filename based on the video path
         import hashlib
         video_hash = hashlib.md5(video_path.encode()).hexdigest()
-        cache_file = os.path.join(self.cache_dir, f"{video_hash}.pt")
+        #cache_file = os.path.join(self.cache_dir, f"{video_hash}.pt")
+        cache_file = os.path.join(self.cache_dir, "mohaddese.pt")
         
         # Check if cache exists on disk first
         if os.path.exists(cache_file):
