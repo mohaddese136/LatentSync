@@ -10,6 +10,9 @@ import numpy as np
 import torch
 import torchvision
 
+import pickle
+
+
 from diffusers.utils import is_accelerate_available
 from packaging import version
 
