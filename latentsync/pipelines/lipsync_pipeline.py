@@ -464,6 +464,15 @@ class LipsyncPipeline(DiffusionPipeline):
                 decoded_latents = self.paste_surrounding_pixels_back(
                     decoded_latents, pixel_values, 1 - masks, device, weight_dtype
                 )
+
+                # Insert streaming logic here
+                framesTemp = self.pixel_values_to_images(decoded_latents)
+                for frame in framesTemp:
+                    img = Image.fromarray(frame)
+                    clear_output(wait=True)
+                    display(img)
+
+                
                 synced_video_frames.append(decoded_latents)
         
                 pbar.update(1)  # Update the overall inference progress bar
