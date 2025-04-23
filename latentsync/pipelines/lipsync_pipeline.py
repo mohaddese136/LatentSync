@@ -1,4 +1,6 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
+from IPython.display import display, clear_output
+from PIL import Image 
 
 import inspect
 import os
