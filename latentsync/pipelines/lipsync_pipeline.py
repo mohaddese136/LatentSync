@@ -470,19 +470,21 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
 
                 # Create a frame buffer to collect multiple frames before displaying
-                # In your inference loop, after processing a batch:
-                if (i % 3 == 0) or (i == num_inferences - 1):  # Show preview every 3 batches or at the end
-                    # Create a small preview video from current frames
+                if (i % 3 == 0) or (i == num_inferences - 1):
+                    # Create a preview video from current frames
                     preview_frames = self.pixel_values_to_images(decoded_latents)
                     preview_path = os.path.join(preview_dir, f"preview_{i}.mp4")
                     
-                    # Write the frames to a temporary video file
+                    # Write the frames to a video file
                     write_video(preview_path, preview_frames, fps=25)
                     
-                    # Display the video
-                    clear_output(wait=True)
-                    display(Video(preview_path, embed=True))
-                    print(f"Processing batch {i+1}/{num_inferences}")
+                    # Ensure the file is properly written
+                    time.sleep(0.2)  # Short delay to ensure file writing is complete
+                    
+                    # Check if file exists and has size
+                    if os.path.exists(preview_path) and os.path.getsize(preview_path) > 0:
+                        clear_output(wait=True)
+                        display(Video(preview_path, embed=True))
 
                 
                 synced_video_frames.append(decoded_latents)
