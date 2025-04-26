@@ -390,10 +390,10 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
         )
 
-        
-        from IPython.display import Video
-        import os
-        import tempfile
+                
+        import matplotlib.pyplot as plt
+        from matplotlib import animation
+        from IPython.display import HTML
         preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
@@ -471,20 +471,19 @@ class LipsyncPipeline(DiffusionPipeline):
 
                 # Create a frame buffer to collect multiple frames before displaying
                 if (i % 3 == 0) or (i == num_inferences - 1):
-                    # Create a preview video from current frames
+                    # Get the frames
                     preview_frames = self.pixel_values_to_images(decoded_latents)
-                    preview_path = os.path.join(preview_dir, f"preview_{i}.mp4")
                     
-                    # Write the frames to a video file
-                    write_video(preview_path, preview_frames, fps=25)
+                    # Create animation
+                    fig = plt.figure(figsize=(8, 8))
+                    plt.axis('off')
                     
-                    # Ensure the file is properly written
-                    time.sleep(0.2)  # Short delay to ensure file writing is complete
+                    imgs = [[plt.imshow(frame, animated=True)] for frame in preview_frames]
+                    ani = animation.ArtistAnimation(fig, imgs, interval=40, blit=True)
                     
-                    # Check if file exists and has size
-                    if os.path.exists(preview_path) and os.path.getsize(preview_path) > 0:
-                        clear_output(wait=True)
-                        display(Video(preview_path, embed=True))
+                    clear_output(wait=True)
+                    plt.close(fig)  # Close the figure to avoid displaying static image
+                    display(HTML(ani.to_jshtml()))
 
                 
                 synced_video_frames.append(decoded_latents)
