@@ -1,7 +1,7 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
 from IPython.display import display, clear_output
 from PIL import Image 
-
+import time
 import inspect
 import os
 import shutil
@@ -467,12 +467,22 @@ class LipsyncPipeline(DiffusionPipeline):
                     decoded_latents, pixel_values, 1 - masks, device, weight_dtype
                 )
 
-                # Insert streaming logic here
+                # Create a frame buffer to collect multiple frames before displaying
+                frame_buffer = []
+                buffer_size = 3  # Number of frames to buffer before displaying
+                
+                # Collect frames in buffer
                 framesTemp = self.pixel_values_to_images(decoded_latents)
-                for frame in framesTemp:
-                    img = Image.fromarray(frame)
-                    clear_output(wait=True)
-                    display(img)
+                frame_buffer.extend([Image.fromarray(frame) for frame in framesTemp])
+                
+                # When buffer is full (or at the end of processing), display frames with minimal delay
+                if len(frame_buffer) >= buffer_size or i == num_inferences - 1:
+                    for frame in frame_buffer:
+                        clear_output(wait=True)
+                        display(frame)
+                        # Add a small delay to control display speed - adjust as needed
+                        time.sleep(0.04)  # ~25fps
+                    frame_buffer = []  # Clear buffer after displaying
 
                 
                 synced_video_frames.append(decoded_latents)
