@@ -391,8 +391,10 @@ class LipsyncPipeline(DiffusionPipeline):
         )
 
         
-
-
+        from IPython.display import Video
+        import os
+        import tempfile
+        preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
                 if self.unet.add_audio_layer:
@@ -468,21 +470,19 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
 
                 # Create a frame buffer to collect multiple frames before displaying
-                frame_buffer = []
-                buffer_size = 3  # Number of frames to buffer before displaying
-                
-                # Collect frames in buffer
-                framesTemp = self.pixel_values_to_images(decoded_latents)
-                frame_buffer.extend([Image.fromarray(frame) for frame in framesTemp])
-                
-                # When buffer is full (or at the end of processing), display frames with minimal delay
-                if len(frame_buffer) >= buffer_size or i == num_inferences - 1:
-                    for frame in frame_buffer:
-                        clear_output(wait=True)
-                        display(frame)
-                        # Add a small delay to control display speed - adjust as needed
-                        time.sleep(0.04)  # ~25fps
-                    frame_buffer = []  # Clear buffer after displaying
+                # In your inference loop, after processing a batch:
+                if (i % 3 == 0) or (i == num_inferences - 1):  # Show preview every 3 batches or at the end
+                    # Create a small preview video from current frames
+                    preview_frames = self.pixel_values_to_images(decoded_latents)
+                    preview_path = os.path.join(preview_dir, f"preview_{i}.mp4")
+                    
+                    # Write the frames to a temporary video file
+                    write_video(preview_path, preview_frames, fps=25)
+                    
+                    # Display the video
+                    clear_output(wait=True)
+                    display(Video(preview_path, embed=True))
+                    print(f"Processing batch {i+1}/{num_inferences}")
 
                 
                 synced_video_frames.append(decoded_latents)
