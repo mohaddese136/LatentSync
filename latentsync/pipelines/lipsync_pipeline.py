@@ -394,6 +394,7 @@ class LipsyncPipeline(DiffusionPipeline):
         import matplotlib.pyplot as plt
         from matplotlib import animation
         from IPython.display import HTML
+        import tempfile
         preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
