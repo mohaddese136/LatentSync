@@ -391,16 +391,10 @@ class LipsyncPipeline(DiffusionPipeline):
         )
 
                 
-        import matplotlib.pyplot as plt
-        from matplotlib import animation
         import tempfile
-        from IPython.display import clear_output, display
-        from PIL import Image
-        import io
-        import base64
-        import IPython.display as ipd
         import time
-
+        import os.path
+        from IPython.display import Video
         preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
@@ -477,20 +471,28 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
 
                 # Create a frame buffer to collect multiple frames before displaying
-                # After decoding latents and processing the frames
-                if (i % 3 == 0) or (i == num_inferences - 1):  # Preview every 3rd batch or the final one
-                    # Get a single frame to display (the middle frame of the batch)
-                    preview_frames = self.pixel_values_to_images(decoded_latents)
-                    middle_frame_idx = len(preview_frames) // 2
-                    preview_frame = preview_frames[middle_frame_idx]
-                    
-                    # Display just one representative frame
+                framesTemp = self.pixel_values_to_images(decoded_latents)
+                # Save this batch as a temporary video file
+                batch_video_path = os.path.join(preview_dir, f"chunk_{i}.mp4")
+                write_video(batch_video_path, framesTemp, fps=25)
+                
+                # Wait for the file to be fully written and check it exists
+                max_wait = 5  # Maximum seconds to wait
+                wait_time = 0
+                while not os.path.exists(batch_video_path) or os.path.getsize(batch_video_path) == 0:
+                    time.sleep(0.5)
+                    wait_time += 0.5
+                    if wait_time >= max_wait:
+                        print(f"Warning: Video file may not be ready yet after {max_wait} seconds")
+                        break
+                
+                # Display the video once we're sure it's ready
+                try:
                     clear_output(wait=True)
-                    plt.figure(figsize=(5, 5))
-                    plt.imshow(preview_frame)
-                    plt.axis('off')
-                    plt.title(f"Batch {i+1}/{num_inferences}")
-                    plt.show()
+                    display(Video(batch_video_path, embed=True))
+                except Exception as e:
+                    print(f"Could not display video preview: {e}")
+
 
                 
                 synced_video_frames.append(decoded_latents)
