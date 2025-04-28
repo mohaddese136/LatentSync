@@ -475,16 +475,17 @@ class LipsyncPipeline(DiffusionPipeline):
                     # Get the frames
                     preview_frames = self.pixel_values_to_images(decoded_latents)
                     
-                    # Create animation
-                    fig = plt.figure(figsize=(8, 8))
-                    plt.axis('off')
+                    # Create an animated GIF in memory
+                    gif_path = io.BytesIO()
+                    preview_frames[0].save(
+                        gif_path, format='GIF', append_images=preview_frames[1:],
+                        save_all=True, duration=40, loop=0
+                    )
+                    gif_data = base64.b64encode(gif_path.getvalue()).decode('utf-8')
                     
-                    imgs = [[plt.imshow(frame, animated=True)] for frame in preview_frames]
-                    ani = animation.ArtistAnimation(fig, imgs, interval=40, blit=True)
-                    
+                    # Display using HTML directly
                     clear_output(wait=True)
-                    plt.close(fig)  # Close the figure to avoid displaying static image
-                    display(HTML(ani.to_jshtml()))
+                    display(ipd.HTML(f'<img src="data:image/gif;base64,{gif_data}" />'))
 
                 
                 synced_video_frames.append(decoded_latents)
