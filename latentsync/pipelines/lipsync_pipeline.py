@@ -481,17 +481,25 @@ class LipsyncPipeline(DiffusionPipeline):
                     # Get the frames
                     preview_frames = self.pixel_values_to_images(decoded_latents)
                     
-                    # Create an animated GIF in memory
-                    gif_path = io.BytesIO()
-                    preview_frames[0].save(
-                        gif_path, format='GIF', append_images=preview_frames[1:],
-                        save_all=True, duration=40, loop=0
-                    )
-                    gif_data = base64.b64encode(gif_path.getvalue()).decode('utf-8')
-                    
-                    # Display using HTML directly
+                    # Create a simple video display without matplotlib
                     clear_output(wait=True)
-                    display(ipd.HTML(f'<img src="data:image/gif;base64,{gif_data}" />'))
+                    
+                    # Display frames as a grid
+                    num_frames = len(preview_frames)
+                    grid_size = min(4, num_frames)  # Show up to 4 frames in a row
+                    rows = (num_frames + grid_size - 1) // grid_size
+                    
+                    # Create a composite image
+                    width, height = preview_frames[0].size
+                    grid_img = Image.new('RGB', (width * grid_size, height * rows))
+                    
+                    for idx, frame in enumerate(preview_frames):
+                        row = idx // grid_size
+                        col = idx % grid_size
+                        grid_img.paste(frame, (col * width, row * height))
+                    
+                    # Display as HTML image for faster rendering
+                    display(grid_img)
 
                 
                 synced_video_frames.append(decoded_latents)
