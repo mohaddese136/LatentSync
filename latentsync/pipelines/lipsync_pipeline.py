@@ -394,7 +394,9 @@ class LipsyncPipeline(DiffusionPipeline):
         import tempfile
         import time
         import os.path
-        from IPython.display import Video
+        from IPython.display import display, Video
+        import imageio
+        
         preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
@@ -471,27 +473,15 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
 
                 # Create a frame buffer to collect multiple frames before displaying
-                framesTemp = self.pixel_values_to_images(decoded_latents)
-                # Save this batch as a temporary video file
                 batch_video_path = os.path.join(preview_dir, f"chunk_{i}.mp4")
-                write_video(batch_video_path, framesTemp, fps=25)
                 
-                # Wait for the file to be fully written and check it exists
-                max_wait = 5  # Maximum seconds to wait
-                wait_time = 0
-                while not os.path.exists(batch_video_path) or os.path.getsize(batch_video_path) == 0:
-                    time.sleep(0.5)
-                    wait_time += 0.5
-                    if wait_time >= max_wait:
-                        print(f"Warning: Video file may not be ready yet after {max_wait} seconds")
-                        break
+                writer = imageio.get_writer(batch_video_path, fps=video_fps)
+                for frame in framesTemp:
+                    writer.append_data(frame)
+                writer.close()
                 
-                # Display the video once we're sure it's ready
-                try:
-                    clear_output(wait=True)
-                    display(Video(batch_video_path, embed=True))
-                except Exception as e:
-                    print(f"Could not display video preview: {e}")
+                # Then display it
+                display(Video(batch_video_path, embed=True))
 
 
                 
