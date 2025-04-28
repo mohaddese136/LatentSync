@@ -401,6 +401,11 @@ class LipsyncPipeline(DiffusionPipeline):
         import IPython.display as ipd
         import time
 
+        import cv2
+        preview_window_name = "Lipsync Preview"
+        cv2.namedWindow(preview_window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(preview_window_name, 512, 512)  # Adjust size as needed
+    
         preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
@@ -477,36 +482,29 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
 
                 # Create a frame buffer to collect multiple frames before displaying
-                if (i % 3 == 0) or (i == num_inferences - 1):
-                    # Get the frames
+                # After decoding latents and processing the frames
+                if (i % 2 == 0) or (i == num_inferences - 1):  # Preview every 2nd batch or the final one
+                    # Get the frames to display
                     preview_frames = self.pixel_values_to_images(decoded_latents)
                     
-                    # Create a simple video display without matplotlib
-                    clear_output(wait=True)
-                    
-                    # Display frames as a grid
-                    num_frames = len(preview_frames)
-                    grid_size = min(4, num_frames)  # Show up to 4 frames in a row
-                    rows = (num_frames + grid_size - 1) // grid_size
-                    
-                    # Create a composite image
-                    width, height = preview_frames[0].size
-                    grid_img = Image.new('RGB', (width * grid_size, height * rows))
-                    
-                    for idx, frame in enumerate(preview_frames):
-                        row = idx // grid_size
-                        col = idx % grid_size
-                        grid_img.paste(frame, (col * width, row * height))
-                    
-                    # Display as HTML image for faster rendering
-                    display(grid_img)
+                    # Display frames in sequence using OpenCV
+                    for frame in preview_frames:
+                        # Convert to BGR for OpenCV
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        cv2.imshow(preview_window_name, frame_bgr)
+                        
+                        # Short delay between frames (30 fps)
+                        if cv2.waitKey(33) & 0xFF == 27:  # Escape to cancel
+                            break
 
                 
                 synced_video_frames.append(decoded_latents)
         
                 pbar.update(1)  # Update the overall inference progress bar
 
-
+       # Close the preview window when done
+        cv2.destroyAllWindows()
+    
         synced_video_frames = self.restore_video(
             torch.cat(synced_video_frames), original_video_frames, boxes, affine_matrices
         )
