@@ -472,7 +472,9 @@ class LipsyncPipeline(DiffusionPipeline):
                     decoded_latents, pixel_values, 1 - masks, device, weight_dtype
                 )
 
+                
                 # Create a frame buffer to collect multiple frames before displaying
+                framesTemp = self.pixel_values_to_images(decoded_latents)
                 batch_video_path = os.path.join(preview_dir, f"chunk_{i}.mp4")
                 
                 writer = imageio.get_writer(batch_video_path, fps=video_fps)
