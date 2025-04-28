@@ -401,11 +401,6 @@ class LipsyncPipeline(DiffusionPipeline):
         import IPython.display as ipd
         import time
 
-        import cv2
-        preview_window_name = "Lipsync Preview"
-        cv2.namedWindow(preview_window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(preview_window_name, 512, 512)  # Adjust size as needed
-    
         preview_dir = tempfile.mkdtemp()
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
@@ -483,27 +478,25 @@ class LipsyncPipeline(DiffusionPipeline):
 
                 # Create a frame buffer to collect multiple frames before displaying
                 # After decoding latents and processing the frames
-                if (i % 2 == 0) or (i == num_inferences - 1):  # Preview every 2nd batch or the final one
-                    # Get the frames to display
+                if (i % 3 == 0) or (i == num_inferences - 1):  # Preview every 3rd batch or the final one
+                    # Get a single frame to display (the middle frame of the batch)
                     preview_frames = self.pixel_values_to_images(decoded_latents)
+                    middle_frame_idx = len(preview_frames) // 2
+                    preview_frame = preview_frames[middle_frame_idx]
                     
-                    # Display frames in sequence using OpenCV
-                    for frame in preview_frames:
-                        # Convert to BGR for OpenCV
-                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                        cv2.imshow(preview_window_name, frame_bgr)
-                        
-                        # Short delay between frames (30 fps)
-                        if cv2.waitKey(33) & 0xFF == 27:  # Escape to cancel
-                            break
+                    # Display just one representative frame
+                    clear_output(wait=True)
+                    plt.figure(figsize=(5, 5))
+                    plt.imshow(preview_frame)
+                    plt.axis('off')
+                    plt.title(f"Batch {i+1}/{num_inferences}")
+                    plt.show()
 
                 
                 synced_video_frames.append(decoded_latents)
         
                 pbar.update(1)  # Update the overall inference progress bar
 
-       # Close the preview window when done
-        cv2.destroyAllWindows()
     
         synced_video_frames = self.restore_video(
             torch.cat(synced_video_frames), original_video_frames, boxes, affine_matrices
