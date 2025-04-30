@@ -332,7 +332,7 @@ class LipsyncPipeline(DiffusionPipeline):
         pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
             inference_faces, affine_transform=False
         )
-    
+
         # Prepare mask latent variables
         mask_latents, masked_image_latents = self.prepare_mask_latents(
             masks,
@@ -344,7 +344,7 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
             do_classifier_free_guidance,
         )
-    
+
         # Prepare image latents
         image_latents = self.prepare_image_latents(
             pixel_values,
@@ -353,7 +353,7 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
             do_classifier_free_guidance,
         )
-    
+
         # Denoising loop
         timesteps = self.scheduler.timesteps
         num_warmup_steps = len(timesteps) - self.num_inference_steps * self.scheduler.order
@@ -362,24 +362,24 @@ class LipsyncPipeline(DiffusionPipeline):
         for j, t in enumerate(timesteps):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-    
+
             # concat latents, mask, masked_image_latents in the channel dimension
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
             latent_model_input = torch.cat(
                 [latent_model_input, mask_latents, masked_image_latents, image_latents], dim=1
             )
-    
+
             # predict the noise residual
             noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=audio_embeds).sample
-    
+
             # perform guidance
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_audio - noise_pred_uncond)
-    
+
             # compute the previous noisy sample x_t -> x_t-1
             latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
-    
+
         # Recover the pixel values
         decoded_latents = self.decode_latents(latents)
         decoded_latents = self.paste_surrounding_pixels_back(
@@ -493,9 +493,9 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Create and submit tasks
                 futures = []
                 for i in range(num_inferences):
-                    process_func = partial(
-                        process_batch, 
-                        self, i, num_frames, weight_dtype, device, do_classifier_free_guidance,
+                    # Here we create a partial function that will call our method
+                    process_func = lambda idx=i: self.process_batch(
+                        idx, num_frames, weight_dtype, device, do_classifier_free_guidance,
                         generator, faces, all_latents, whisper_chunks, preview_dir
                     )
                     futures.append(executor.submit(process_func))
