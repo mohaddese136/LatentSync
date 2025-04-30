@@ -308,6 +308,264 @@ class LipsyncPipeline(DiffusionPipeline):
         return np.stack(out_frames, axis=0)
 
 
+
+    import concurrent.futures
+    from typing import Callable, List, Optional, Union
+    import torch
+    import tempfile
+    import os
+    import tqdm
+    
+    def process_batch(self, i, num_frames, faces, all_latents, whisper_chunks, guidance_scale, 
+                      weight_dtype, device, generator, do_classifier_free_guidance, 
+                      height, width, num_inference_steps, callback, callback_steps, preview_dir):
+        """Process a single batch of frames"""
+        # Setup for this batch
+        if self.unet.add_audio_layer:
+            audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
+            audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
+            if do_classifier_free_guidance:
+                null_audio_embeds = torch.zeros_like(audio_embeds)
+                audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
+        else:
+            audio_embeds = None
+        
+        inference_faces = faces[i * num_frames : (i + 1) * num_frames]
+        latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
+        pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
+            inference_faces, affine_transform=False
+        )
+    
+        # Prepare mask latent variables
+        mask_latents, masked_image_latents = self.prepare_mask_latents(
+            masks,
+            masked_pixel_values,
+            height,
+            width,
+            weight_dtype,
+            device,
+            generator,
+            do_classifier_free_guidance,
+        )
+    
+        # Prepare image latents
+        image_latents = self.prepare_image_latents(
+            pixel_values,
+            device,
+            weight_dtype,
+            generator,
+            do_classifier_free_guidance,
+        )
+    
+        # Denoising loop
+        timesteps = self.scheduler.timesteps
+        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, 0.0)  # Using default eta
+        
+        for j, t in enumerate(timesteps):
+            # expand the latents if we are doing classifier free guidance
+            latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+    
+            # concat latents, mask, masked_image_latents in the channel dimension
+            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+            latent_model_input = torch.cat(
+                [latent_model_input, mask_latents, masked_image_latents, image_latents], dim=1
+            )
+    
+            # predict the noise residual
+            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=audio_embeds).sample
+    
+            # perform guidance
+            if do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
+    
+            # compute the previous noisy sample x_t -> x_t-1
+            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+    
+            # call the callback, if provided
+            if callback is not None and j % callback_steps == 0:
+                callback(j, t, latents)
+    
+        # Recover the pixel values
+        decoded_latents = self.decode_latents(latents)
+        decoded_latents = self.paste_surrounding_pixels_back(
+            decoded_latents, pixel_values, 1 - masks, device, weight_dtype
+        )
+        
+        # Save frames to disk for preview
+        import imageio
+        framesTemp = self.pixel_values_to_images(decoded_latents)
+        batch_video_path = os.path.join(preview_dir, f"chunk_{i}.mp4")
+        
+        writer = imageio.get_writer(batch_video_path, fps=self.video_fps)
+        for frame in framesTemp:
+            writer.append_data(frame)
+        writer.close()
+        
+        return decoded_latents, i
+    
+    
+    # Modify the __call__ method to include parallel processing
+    def parallel_call(
+        self,
+        video_path: str,
+        audio_path: str,
+        video_out_path: str,
+        video_mask_path: str = None,
+        num_frames: int = 16,
+        video_fps: int = 25,
+        audio_sample_rate: int = 16000,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        num_inference_steps: int = 20,
+        guidance_scale: float = 1.5,
+        weight_dtype: Optional[torch.dtype] = torch.float16,
+        eta: float = 0.0,
+        mask: str = "fix_mask",
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: Optional[int] = 1,
+        parallel_size: int = 3,  # Number of batches to process in parallel
+        **kwargs,
+    ):
+        is_train = self.unet.training
+        self.unet.eval()
+    
+        # Initialize the preview directory
+        preview_dir = tempfile.mkdtemp()
+        
+        # 0. Define call parameters
+        device = self._execution_device
+        self.image_processor = ImageProcessor(height, mask=mask, device="cuda")
+        self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
+    
+        faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
+        audio_samples = read_audio(audio_path)
+    
+        # 1. Default height and width to unet
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
+    
+        # 2. Check inputs
+        self.check_inputs(height, width, callback_steps)
+    
+        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
+        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+        # corresponds to doing no classifier free guidance.
+        do_classifier_free_guidance = guidance_scale > 1.0
+    
+        # 3. set timesteps
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
+    
+        self.video_fps = video_fps
+    
+        if self.unet.add_audio_layer:
+            whisper_feature = self.audio_encoder.audio2feat(audio_path)
+            whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+    
+            num_inferences = min(len(faces), len(whisper_chunks)) // num_frames
+        else:
+            num_inferences = len(faces) // num_frames
+            whisper_chunks = None
+    
+        num_channels_latents = self.vae.config.latent_channels
+    
+        # Prepare latent variables
+        all_latents = self.prepare_latents(
+            1,  # batch_size
+            num_frames * num_inferences,
+            num_channels_latents,
+            height,
+            width,
+            weight_dtype,
+            device,
+            generator,
+        )
+    
+        # Store the results in order
+        synced_video_frames = [None] * num_inferences
+        
+        print(f"Processing {num_inferences} batches with parallelism of {parallel_size}")
+        
+        # Process in batches of specified size
+        with tqdm.tqdm(total=num_inferences, desc="Processing batches", unit="batch") as pbar:
+            for batch_start in range(0, num_inferences, parallel_size):
+                batch_end = min(batch_start + parallel_size, num_inferences)
+                current_parallel_size = batch_end - batch_start
+                
+                # Create a thread pool executor
+                with concurrent.futures.ThreadPoolExecutor(max_workers=current_parallel_size) as executor:
+                    # Submit tasks for each batch item
+                    futures = []
+                    for i in range(batch_start, batch_end):
+                        future = executor.submit(
+                            process_batch, 
+                            self, i, num_frames, faces, all_latents, whisper_chunks, 
+                            guidance_scale, weight_dtype, device, generator, 
+                            do_classifier_free_guidance, height, width, 
+                            num_inference_steps, callback, callback_steps, preview_dir
+                        )
+                        futures.append(future)
+                    
+                    # Process results as they complete
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            decoded_latents, idx = future.result()
+                            synced_video_frames[idx] = decoded_latents
+                            pbar.update(1)
+                            
+                            # Display the preview
+                            from IPython.display import display, Video
+                            batch_video_path = os.path.join(preview_dir, f"chunk_{idx}.mp4")
+                            if os.path.exists(batch_video_path):
+                                display(Video(batch_video_path, embed=True))
+                            
+                        except Exception as e:
+                            print(f"An error occurred: {e}")
+        
+        # Filter out any None values (in case of errors)
+        synced_video_frames = [f for f in synced_video_frames if f is not None]
+        
+        if not synced_video_frames:
+            raise ValueError("No frames were processed successfully.")
+        
+        # Combine all processed frames
+        synced_video_frames = torch.cat(synced_video_frames)
+        
+        # Restore video
+        restored_frames = self.restore_video(
+            synced_video_frames, original_video_frames, boxes, affine_matrices
+        )
+    
+        # Prepare audio
+        audio_samples_remain_length = int(restored_frames.shape[0] / video_fps * audio_sample_rate)
+        audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+    
+        if is_train:
+            self.unet.train()
+    
+        # Write output
+        temp_dir = "temp"
+        if os.path.exists(temp_dir):
+            import shutil
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir, exist_ok=True)
+    
+        write_video(os.path.join(temp_dir, "video.mp4"), restored_frames, fps=25)
+        import soundfile as sf
+        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
+    
+        import subprocess
+        command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
+        subprocess.run(command, shell=True)
+        
+        return video_out_path
+
+
+
+
+    
     @torch.no_grad()
     def __call__(
         self,
