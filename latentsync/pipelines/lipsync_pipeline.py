@@ -38,6 +38,11 @@ from ..whisper.audio2feature import Audio2Feature
 import tqdm
 import soundfile as sf
 
+
+import concurrent.futures
+from functools import partial
+
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -308,8 +313,7 @@ class LipsyncPipeline(DiffusionPipeline):
         return np.stack(out_frames, axis=0)
 
 
-    import concurrent.futures
-    from functools import partial
+
     
     def process_batch(self, i, num_frames, weight_dtype, device, do_classifier_free_guidance, 
                       generator, faces, all_latents, audio_embeds_list=None, preview_dir=None):
